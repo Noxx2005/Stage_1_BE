@@ -36,6 +36,7 @@ class ProfileDB(Base):
     age = Column(Integer, nullable=False)
     age_group = Column(String, nullable=False)
     country_id = Column(String, nullable=False)
+    country_name = Column(String, nullable=False)
     country_probability = Column(Float, nullable=False)
     created_at = Column(DateTime, nullable=False)
 
@@ -65,6 +66,7 @@ class ProfileResponse(BaseModel):
     age: int
     age_group: str
     country_id: str
+    country_name: str
     country_probability: float
     created_at: str
 
@@ -73,9 +75,13 @@ class ProfileListItem(BaseModel):
     id: str
     name: str
     gender: str
+    gender_probability: float
     age: int
     age_group: str
     country_id: str
+    country_name: str
+    country_probability: float
+    created_at: str
 
 
 class SuccessResponseSingle(BaseModel):
@@ -91,7 +97,9 @@ class SuccessResponseSingleWithMessage(BaseModel):
 
 class SuccessResponseList(BaseModel):
     status: str = "success"
-    count: int
+    page: int
+    limit: int
+    total: int
     data: List[ProfileListItem]
 
 
@@ -169,6 +177,152 @@ def get_country_with_highest_prob(countries: list) -> tuple:
     return highest.get('country_id'), highest.get('probability')
 
 
+# Country name to country ID mapping (from common countries in seed data)
+COUNTRY_NAME_TO_ID = {
+    'nigeria': 'NG',
+    'united states': 'US',
+    'tanzania': 'TZ',
+    'uganda': 'UG',
+    'sudan': 'SD',
+    'kenya': 'KE',
+    'ghana': 'GH',
+    'ethiopia': 'ET',
+    'south africa': 'ZA',
+    'cameroon': 'CM',
+    'angola': 'AO',
+    'ivory coast': 'CI',
+    'mozambique': 'MZ',
+    'zimbabwe': 'ZW',
+    'zambia': 'ZM',
+    'botswana': 'BW',
+    'malawi': 'MW',
+    'rwanda': 'RW',
+    'burundi': 'BI',
+    'senegal': 'SN',
+    'mali': 'ML',
+    'burkina faso': 'BF',
+    'niger': 'NE',
+    'chad': 'TD',
+    'central african republic': 'CF',
+    'congo': 'CG',
+    'democratic republic of the congo': 'CD',
+    'benin': 'BJ',
+    'togo': 'TG',
+    'gambia': 'GM',
+    'guinea': 'GN',
+    'guinea-bissau': 'GW',
+    'sierra leone': 'SL',
+    'liberia': 'LR',
+    'libya': 'LY',
+    'egypt': 'EG',
+    'morocco': 'MA',
+    'algeria': 'DZ',
+    'tunisia': 'TN',
+    'mauritania': 'MR',
+    'western sahara': 'EH',
+    'somalia': 'SO',
+    'djibouti': 'DJ',
+    'eritrea': 'ER',
+    'south sudan': 'SS',
+    'gabon': 'GA',
+    'equatorial guinea': 'GQ',
+    'sao tome and principe': 'ST',
+    'cape verde': 'CV',
+    'comoros': 'KM',
+    'madagascar': 'MG',
+    'mauritius': 'MU',
+    'seychelles': 'SC',
+    'lesotho': 'LS',
+    'eswatini': 'SZ',
+    'namibia': 'NA',
+}
+
+def parse_natural_language_query(query: str) -> dict:
+    """
+    Parse natural language query and convert to filters.
+    Rule-based parsing only (no AI/LLM).
+    
+    Supported patterns:
+    - "young" → ages 16-24
+    - "male/female" → gender filter
+    - "from {country}" → country_id filter
+    - "adult/teenager/senior/child" → age_group filter
+    - "above {age}" → min_age filter
+    - "below {age}" → max_age filter
+    - "and" → combines multiple conditions
+    
+    Returns dict with filter keys or None if query can't be interpreted.
+    """
+    if not query or not query.strip():
+        return None
+    
+    query_lower = query.lower().strip()
+    filters = {}
+    
+    # Extract gender
+    if 'male' in query_lower:
+        filters['gender'] = 'male'
+    if 'female' in query_lower:
+        filters['gender'] = 'female'
+    
+    # Extract age group keywords
+    if 'adult' in query_lower and 'teenager' not in query_lower and 'child' not in query_lower:
+        filters['age_group'] = 'adult'
+    elif 'teenager' in query_lower:
+        filters['age_group'] = 'teenager'
+    elif 'senior' in query_lower:
+        filters['age_group'] = 'senior'
+    elif 'child' in query_lower:
+        filters['age_group'] = 'child'
+    
+    # Extract "young" keyword (maps to 16-24)
+    if 'young' in query_lower:
+        filters['min_age'] = 16
+        filters['max_age'] = 24
+    
+    # Extract "above {age}" pattern
+    import re
+    above_match = re.search(r'above\s+(\d+)', query_lower)
+    if above_match:
+        filters['min_age'] = int(above_match.group(1))
+    
+    # Extract "below {age}" pattern
+    below_match = re.search(r'below\s+(\d+)', query_lower)
+    if below_match:
+        filters['max_age'] = int(below_match.group(1))
+    
+    # Extract "over {age}" pattern (alternative to above)
+    over_match = re.search(r'over\s+(\d+)', query_lower)
+    if over_match:
+        filters['min_age'] = int(over_match.group(1))
+    
+    # Extract "under {age}" pattern (alternative to below)
+    under_match = re.search(r'under\s+(\d+)', query_lower)
+    if under_match:
+        filters['max_age'] = int(under_match.group(1))
+    
+    # Extract "from {country}" pattern
+    from_match = re.search(r'from\s+(\w+(?:\s+\w+)?)', query_lower)
+    if from_match:
+        country_name = from_match.group(1)
+        # Try to match country name to ID
+        country_id = COUNTRY_NAME_TO_ID.get(country_name)
+        if country_id:
+            filters['country_id'] = country_id
+        else:
+            # Try partial match
+            for name, cid in COUNTRY_NAME_TO_ID.items():
+                if country_name in name or name in country_name:
+                    filters['country_id'] = cid
+                    break
+    
+    # If no filters were extracted, return None
+    if not filters:
+        return None
+    
+    return filters
+
+
 # FastAPI app
 app = FastAPI(
     title="HNG Stage 1 - Profile API",
@@ -243,6 +397,7 @@ async def create_profile(request: CreateProfileRequest):
                 age=existing_profile.age,
                 age_group=existing_profile.age_group,
                 country_id=existing_profile.country_id,
+                country_name=existing_profile.country_name,
                 country_probability=existing_profile.country_probability,
                 created_at=existing_profile.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
             )
@@ -305,6 +460,7 @@ async def create_profile(request: CreateProfileRequest):
         age=age,
         age_group=age_group,
         country_id=country_id,
+        country_name="",  # Will be filled by external API mapping
         country_probability=country_probability,
         created_at=datetime.now(timezone.utc)
     )
@@ -324,6 +480,7 @@ async def create_profile(request: CreateProfileRequest):
             age=new_profile.age,
             age_group=new_profile.age_group,
             country_id=new_profile.country_id,
+            country_name=new_profile.country_name,
             country_probability=new_profile.country_probability,
             created_at=new_profile.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
         )
@@ -353,18 +510,88 @@ async def get_profile(profile_id: str):
             age=profile.age,
             age_group=profile.age_group,
             country_id=profile.country_id,
+            country_name=profile.country_name,
             country_probability=profile.country_probability,
             created_at=profile.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
         )
     )
 
 
-# GET /api/profiles - Get all profiles with optional filters
+# GET /api/profiles/search - Natural language search
+@app.get("/api/profiles/search", response_model=SuccessResponseList)
+async def search_profiles(
+    q: str = Query(..., description="Natural language query string"),
+    page: int = Query(1, ge=1, description="Page number (default: 1)"),
+    limit: int = Query(10, ge=1, le=50, description="Results per page (default: 10, max: 50)")
+):
+    # Parse natural language query
+    filters = parse_natural_language_query(q)
+    
+    if not filters:
+        raise HTTPException(
+            status_code=400,
+            detail={"status": "error", "message": "Unable to interpret query"}
+        )
+    
+    db = next(get_db())
+    query = db.query(ProfileDB)
+    
+    # Apply parsed filters
+    if 'gender' in filters:
+        query = query.filter(ProfileDB.gender.ilike(filters['gender']))
+    if 'country_id' in filters:
+        query = query.filter(ProfileDB.country_id.ilike(filters['country_id']))
+    if 'age_group' in filters:
+        query = query.filter(ProfileDB.age_group.ilike(filters['age_group']))
+    if 'min_age' in filters:
+        query = query.filter(ProfileDB.age >= filters['min_age'])
+    if 'max_age' in filters:
+        query = query.filter(ProfileDB.age <= filters['max_age'])
+    
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply pagination
+    offset = (page - 1) * limit
+    profiles = query.offset(offset).limit(limit).all()
+    
+    return SuccessResponseList(
+        status="success",
+        page=page,
+        limit=limit,
+        total=total,
+        data=[
+            ProfileListItem(
+                id=p.id,
+                name=p.name,
+                gender=p.gender,
+                gender_probability=p.gender_probability,
+                age=p.age,
+                age_group=p.age_group,
+                country_id=p.country_id,
+                country_name=p.country_name,
+                country_probability=p.country_probability,
+                created_at=p.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            )
+            for p in profiles
+        ]
+    )
+
+
+# GET /api/profiles - Get all profiles with optional filters, sorting, and pagination
 @app.get("/api/profiles", response_model=SuccessResponseList)
 async def get_all_profiles(
     gender: Optional[str] = Query(None, description="Filter by gender (case-insensitive)"),
     country_id: Optional[str] = Query(None, description="Filter by country ID (case-insensitive)"),
-    age_group: Optional[str] = Query(None, description="Filter by age group (case-insensitive)")
+    age_group: Optional[str] = Query(None, description="Filter by age group (case-insensitive)"),
+    min_age: Optional[int] = Query(None, description="Filter by minimum age"),
+    max_age: Optional[int] = Query(None, description="Filter by maximum age"),
+    min_gender_probability: Optional[float] = Query(None, description="Filter by minimum gender probability"),
+    min_country_probability: Optional[float] = Query(None, description="Filter by minimum country probability"),
+    sort_by: Optional[str] = Query(None, description="Sort by: age, created_at, gender_probability"),
+    order: Optional[str] = Query("asc", description="Sort order: asc or desc"),
+    page: int = Query(1, ge=1, description="Page number (default: 1)"),
+    limit: int = Query(10, ge=1, le=50, description="Results per page (default: 10, max: 50)")
 ):
     db = next(get_db())
     query = db.query(ProfileDB)
@@ -377,19 +604,54 @@ async def get_all_profiles(
     if age_group:
         query = query.filter(ProfileDB.age_group.ilike(age_group))
     
-    profiles = query.all()
+    # Apply numeric filters
+    if min_age is not None:
+        query = query.filter(ProfileDB.age >= min_age)
+    if max_age is not None:
+        query = query.filter(ProfileDB.age <= max_age)
+    if min_gender_probability is not None:
+        query = query.filter(ProfileDB.gender_probability >= min_gender_probability)
+    if min_country_probability is not None:
+        query = query.filter(ProfileDB.country_probability >= min_country_probability)
+    
+    # Get total count before pagination
+    total = query.count()
+    
+    # Apply sorting
+    if sort_by:
+        valid_sort_fields = {
+            'age': ProfileDB.age,
+            'created_at': ProfileDB.created_at,
+            'gender_probability': ProfileDB.gender_probability
+        }
+        if sort_by in valid_sort_fields:
+            sort_field = valid_sort_fields[sort_by]
+            if order.lower() == 'desc':
+                query = query.order_by(sort_field.desc())
+            else:
+                query = query.order_by(sort_field.asc())
+    
+    # Apply pagination
+    offset = (page - 1) * limit
+    profiles = query.offset(offset).limit(limit).all()
     
     return SuccessResponseList(
         status="success",
-        count=len(profiles),
+        page=page,
+        limit=limit,
+        total=total,
         data=[
             ProfileListItem(
                 id=p.id,
                 name=p.name,
                 gender=p.gender,
+                gender_probability=p.gender_probability,
                 age=p.age,
                 age_group=p.age_group,
-                country_id=p.country_id
+                country_id=p.country_id,
+                country_name=p.country_name,
+                country_probability=p.country_probability,
+                created_at=p.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
             )
             for p in profiles
         ]

@@ -1,17 +1,24 @@
-# HNG Stage 1 - Profile API
+# HNG Stage 1 & 2 - Profile API
 
 A FastAPI-based REST API that integrates with external APIs (Genderize, Agify, Nationalize) to create and manage profiles with persistence.
 
 ## Features
 
+### Stage 1 Features
 - **External API Integration**: Fetches gender, age, and nationality data from free APIs
 - **Data Persistence**: SQLite database for storing profiles
 - **Idempotency**: Returns existing profile if name already exists
-- **Filtering**: Query profiles by gender, country_id, or age_group
 - **Error Handling**: Proper HTTP status codes and error messages
 - **CORS Support**: Allows cross-origin requests
 - **UUID v7**: Time-ordered unique identifiers
 - **UTC Timestamps**: ISO 8601 format
+
+### Stage 2 Features
+- **Advanced Filtering**: Filter by gender, age_group, country_id, min_age, max_age, min_gender_probability, min_country_probability
+- **Sorting**: Sort results by age, created_at, or gender_probability in ascending or descending order
+- **Pagination**: Paginate results with configurable page size (max 50 per page)
+- **Natural Language Search**: Query profiles using plain English (e.g., "young males from nigeria")
+- **Database Seeding**: Pre-seeded with 2026 profiles from provided JSON data
 
 ## API Endpoints
 
@@ -84,40 +91,173 @@ GET /api/profiles?gender=male
 GET /api/profiles?country_id=NG
 GET /api/profiles?age_group=adult
 GET /api/profiles?gender=male&country_id=NG&age_group=adult
+GET /api/profiles?min_age=25&max_age=50&sort_by=age&order=desc&page=1&limit=10
 ```
 
 **Success Response (200):**
 ```json
 {
   "status": "success",
-  "count": 2,
+  "page": 1,
+  "limit": 10,
+  "total": 2026,
   "data": [
     {
       "id": "id-1",
       "name": "emmanuel",
       "gender": "male",
+      "gender_probability": 0.99,
       "age": 25,
       "age_group": "adult",
-      "country_id": "NG"
-    },
-    {
-      "id": "id-2",
-      "name": "sarah",
-      "gender": "female",
-      "age": 28,
-      "age_group": "adult",
-      "country_id": "US"
+      "country_id": "NG",
+      "country_name": "Nigeria",
+      "country_probability": 0.85,
+      "created_at": "2026-04-01T12:00:00Z"
     }
   ]
 }
 ```
 
-### 4. Delete Profile
+**Supported Query Parameters:**
+- `gender`: Filter by gender (male/female)
+- `age_group`: Filter by age group (child/teenager/adult/senior)
+- `country_id`: Filter by country ISO code
+- `min_age`: Filter by minimum age
+- `max_age`: Filter by maximum age
+- `min_gender_probability`: Filter by minimum gender probability
+- `min_country_probability`: Filter by minimum country probability
+- `sort_by`: Sort by field (age, created_at, gender_probability)
+- `order`: Sort order (asc/desc)
+- `page`: Page number (default: 1)
+- `limit`: Results per page (default: 10, max: 50)
+
+### 4. Natural Language Search
+```http
+GET /api/profiles/search?q=young males from nigeria
+GET /api/profiles/search?q=females above 30
+GET /api/profiles/search?q=adult males from kenya&page=1&limit=10
+```
+
+**Success Response (200):**
+```json
+{
+  "status": "success",
+  "page": 1,
+  "limit": 10,
+  "total": 150,
+  "data": [...]
+}
+```
+
+**Error Response (400):**
+```json
+{
+  "status": "error",
+  "message": "Unable to interpret query"
+}
+```
+
+### 5. Delete Profile
 ```http
 DELETE /api/profiles/{id}
 ```
 
 **Success Response:** 204 No Content
+
+## Natural Language Search Documentation
+
+### Parsing Approach
+
+The natural language search uses **rule-based pattern matching** (no AI or LLM). The parser converts plain English queries into structured database filters by detecting specific keywords and patterns.
+
+### Supported Keywords and Their Mappings
+
+| Keyword/Pattern | Mapped Filter | Example Query | Resulting Filters |
+|-----------------|---------------|---------------|-------------------|
+| `male` | `gender=male` | "young males" | `gender=male, min_age=16, max_age=24` |
+| `female` | `gender=female` | "females above 30" | `gender=female, min_age=30` |
+| `young` | `min_age=16, max_age=24` | "young people" | `min_age=16, max_age=24` |
+| `adult` | `age_group=adult` | "adult males" | `gender=male, age_group=adult` |
+| `teenager` | `age_group=teenager` | "teenagers above 17" | `age_group=teenager, min_age=17` |
+| `senior` | `age_group=senior` | "senior women" | `gender=female, age_group=senior` |
+| `child` | `age_group=child` | "young children" | `age_group=child, min_age=16, max_age=24` |
+| `above {age}` | `min_age={age}` | "males above 30" | `gender=male, min_age=30` |
+| `below {age}` | `max_age={age}` | "people below 25" | `max_age=25` |
+| `over {age}` | `min_age={age}` | "people over 40" | `min_age=40` |
+| `under {age}` | `max_age={age}` | "people under 18" | `max_age=18` |
+| `from {country}` | `country_id={ISO}` | "from nigeria" | `country_id=NG` |
+
+### How the Logic Works
+
+1. **Query Normalization**: Convert the query to lowercase and strip whitespace
+2. **Pattern Matching**: Apply regex patterns to extract keywords and values
+3. **Filter Construction**: Build a dictionary of filters based on detected patterns
+4. **Validation**: If no filters are extracted, return an error
+5. **Database Query**: Apply filters to the database query with pagination
+
+### Example Query Parsing
+
+**Input**: "young males from nigeria"
+
+**Parsing Steps**:
+1. Detect "young" → Set `min_age=16, max_age=24`
+2. Detect "male" → Set `gender=male`
+3. Detect "from nigeria" → Look up country name "nigeria" → Set `country_id=NG`
+
+**Resulting Filters**:
+```python
+{
+  'gender': 'male',
+  'min_age': 16,
+  'max_age': 24,
+  'country_id': 'NG'
+}
+```
+
+### Country Name Mapping
+
+The parser includes a mapping of 50+ African and other country names to their ISO codes. It supports:
+- Exact matches: "nigeria" → "NG"
+- Multi-word countries: "united states" → "US", "south africa" → "ZA"
+- Partial matching for common variations
+
+### Limitations and Edge Cases
+
+**What the Parser Does NOT Handle:**
+
+1. **Complex Boolean Logic**: Cannot handle "AND", "OR", "NOT" operators beyond simple keyword combination
+2. **Age Ranges**: Cannot parse "between 20 and 30" - must use "above 20" and "below 30" separately
+3. **Negative Filters**: Cannot handle "not from nigeria" or "excluding males"
+4. **Multiple Countries**: Only extracts the first "from {country}" pattern
+5. **Gender Combinations**: "male and female" will only match the last detected gender
+6. **Synonyms**: Does not understand "kids" (use "children"), "guys" (use "males"), "ladies" (use "females")
+7. **Misspellings**: Requires exact keyword matching - "nigera" will not match "nigeria"
+8. **Contextual Understanding**: "young seniors" is semantically invalid but will still apply both filters
+9. **Probability Filters**: Cannot parse "high confidence" or "low probability" - use numeric filters instead
+10. **Date/Time Queries**: Cannot parse "profiles created this week" or "recent profiles"
+
+**Edge Cases:**
+
+- **Conflicting Age Filters**: "young adults above 30" will apply both `min_age=16, max_age=24` AND `min_age=30`, resulting in no matches
+- **Unknown Countries**: "from mars" will not be recognized and no country filter will be applied
+- **Empty Queries**: Returns 400 error with "Unable to interpret query"
+- **Case Sensitivity**: Parser is case-insensitive, but country names must match the mapping
+- **Partial Words**: "m" will not match "male" - full keywords are required
+
+**Supported Query Combinations:**
+
+✅ **Works**:
+- "young males from nigeria"
+- "females above 30"
+- "adult males from kenya"
+- "teenagers above 17"
+- "people from angola"
+
+❌ **Does Not Work**:
+- "people between 20 and 30" (use min_age/max_age)
+- "not from nigeria" (negative filters not supported)
+- "males or females" (boolean OR not supported)
+- "high confidence profiles" (use min_gender_probability)
 
 ## Error Responses
 
