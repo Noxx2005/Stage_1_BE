@@ -487,37 +487,7 @@ async def create_profile(request: CreateProfileRequest):
     )
 
 
-# GET /api/profiles/{id} - Get single profile
-@app.get("/api/profiles/{profile_id}", response_model=SuccessResponseSingle)
-async def get_profile(profile_id: str):
-    db = next(get_db())
-    profile = db.query(ProfileDB).filter(ProfileDB.id == profile_id).first()
-    
-    if not profile:
-        raise HTTPException(
-            status_code=404,
-            detail={"status": "error", "message": "Profile not found"}
-        )
-    
-    return SuccessResponseSingle(
-        status="success",
-        data=ProfileResponse(
-            id=profile.id,
-            name=profile.name,
-            gender=profile.gender,
-            gender_probability=profile.gender_probability,
-            sample_size=profile.sample_size,
-            age=profile.age,
-            age_group=profile.age_group,
-            country_id=profile.country_id,
-            country_name=profile.country_name,
-            country_probability=profile.country_probability,
-            created_at=profile.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        )
-    )
-
-
-# GET /api/profiles/search - Natural language search
+# GET /api/profiles/search - Natural language search (must come before /{id} route)
 @app.get("/api/profiles/search", response_model=SuccessResponseList)
 async def search_profiles(
     q: str = Query(..., description="Natural language query string"),
@@ -575,6 +545,36 @@ async def search_profiles(
             )
             for p in profiles
         ]
+    )
+
+
+# GET /api/profiles/{id} - Get single profile
+@app.get("/api/profiles/{profile_id}", response_model=SuccessResponseSingle)
+async def get_profile(profile_id: str):
+    db = next(get_db())
+    profile = db.query(ProfileDB).filter(ProfileDB.id == profile_id).first()
+    
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail={"status": "error", "message": "Profile not found"}
+        )
+    
+    return SuccessResponseSingle(
+        status="success",
+        data=ProfileResponse(
+            id=profile.id,
+            name=profile.name,
+            gender=profile.gender,
+            gender_probability=profile.gender_probability,
+            sample_size=profile.sample_size,
+            age=profile.age,
+            age_group=profile.age_group,
+            country_id=profile.country_id,
+            country_name=profile.country_name,
+            country_probability=profile.country_probability,
+            created_at=profile.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
     )
 
 
