@@ -5,6 +5,7 @@ FastAPI + SQLite implementation
 
 import time
 import uuid
+import json
 from datetime import datetime, timezone
 from typing import List, Optional, Union
 
@@ -237,6 +238,82 @@ COUNTRY_NAME_TO_ID = {
     'namibia': 'NA',
 }
 
+def seed_database():
+    """Seed database with profiles from seed_profiles.json"""
+    print("Loading seed data from seed_profiles.json...")
+    
+    try:
+        with open('seed_profiles.json', 'r') as f:
+            data = json.load(f)
+            profiles_data = data.get('profiles', [])
+        
+        print(f"Found {len(profiles_data)} profiles in seed data")
+        
+        db = SessionLocal()
+        
+        # Track statistics
+        added = 0
+        skipped = 0
+        errors = 0
+        
+        for profile_data in profiles_data:
+            try:
+                # Check if profile with this name already exists
+                existing = db.query(ProfileDB).filter(
+                    ProfileDB.name == profile_data['name'].lower().strip()
+                ).first()
+                
+                if existing:
+                    skipped += 1
+                    print(f"Skipping duplicate: {profile_data['name']}")
+                    continue
+                
+                # Create new profile
+                new_profile = ProfileDB(
+                    id=generate_uuid_v7(),
+                    name=profile_data['name'].lower().strip(),
+                    gender=profile_data['gender'],
+                    gender_probability=profile_data['gender_probability'],
+                    sample_size=0,  # Not provided in seed data
+                    age=profile_data['age'],
+                    age_group=profile_data['age_group'],
+                    country_id=profile_data['country_id'],
+                    country_name=profile_data['country_name'],
+                    country_probability=profile_data['country_probability'],
+                    created_at=datetime.now(timezone.utc)
+                )
+                
+                db.add(new_profile)
+                added += 1
+                
+                if added % 100 == 0:
+                    print(f"Added {added} profiles so far...")
+                    
+            except Exception as e:
+                errors += 1
+                print(f"Error adding profile {profile_data.get('name', 'unknown')}: {e}")
+                continue
+        
+        db.commit()
+        
+        print("\n" + "="*50)
+        print("Seeding complete!")
+        print(f"Added: {added} profiles")
+        print(f"Skipped (duplicates): {skipped} profiles")
+        print(f"Errors: {errors} profiles")
+        print(f"Total profiles in database: {db.query(ProfileDB).count()}")
+        print("="*50)
+        
+        db.close()
+        
+    except FileNotFoundError:
+        print("Error: seed_profiles.json not found")
+    except json.JSONDecodeError:
+        print("Error: seed_profiles.json is not valid JSON")
+    except Exception as e:
+        print(f"Error: {e}")
+
+
 def parse_natural_language_query(query: str) -> dict:
     """
     Parse natural language query and convert to filters.
@@ -329,6 +406,24 @@ app = FastAPI(
     description="API for creating and managing profiles with external API integration",
     version="1.0.0"
 )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Seed database on startup if empty"""
+    db = SessionLocal()
+    try:
+        # Check if database is empty
+        count = db.query(ProfileDB).count()
+        if count == 0:
+            print("Database is empty, seeding with profiles...")
+            seed_database()
+        else:
+            print(f"Database already has {count} profiles")
+    except Exception as e:
+        print(f"Error checking database: {e}")
+    finally:
+        db.close()
 
 # CORS middleware
 app.add_middleware(
@@ -631,7 +726,11 @@ async def get_all_profiles(
             else:
                 query = query.order_by(sort_field.asc())
     
-    # Apply pagination
+    # Apply pagination with validation
+    max_page = (total + limit - 1) // limit if total > 0 else 1
+    if page > max_page:
+        page = max_page
+    
     offset = (page - 1) * limit
     profiles = query.offset(offset).limit(limit).all()
     
@@ -655,6 +754,36 @@ async def get_all_profiles(
             )
             for p in profiles
         ]
+    )
+
+
+# GET /api/profiles/{id} - Get single profile
+@app.get("/api/profiles/{profile_id}", response_model=SuccessResponseSingle)
+async def get_profile(profile_id: str):
+    db = next(get_db())
+    profile = db.query(ProfileDB).filter(ProfileDB.id == profile_id).first()
+    
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail={"status": "error", "message": "Profile not found"}
+        )
+    
+    return SuccessResponseSingle(
+        status="success",
+        data=ProfileResponse(
+            id=profile.id,
+            name=profile.name,
+            gender=profile.gender,
+            gender_probability=profile.gender_probability,
+            sample_size=profile.sample_size,
+            age=profile.age,
+            age_group=profile.age_group,
+            country_id=profile.country_id,
+            country_name=profile.country_name,
+            country_probability=profile.country_probability,
+            created_at=profile.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
     )
 
 
