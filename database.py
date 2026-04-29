@@ -20,23 +20,37 @@ Base = declarative_base()
 
 
 def generate_uuid_v7() -> str:
-    """Generate UUID v7 (time-ordered)"""
+    """
+    Generate UUID v7 (time-ordered) per RFC 9562.
+    Format: unix_ts_ms (48 bits) | ver (4 bits) | rand_a (12 bits) | var (2 bits) | rand_b (62 bits)
+    """
     timestamp_ms = int(time.time() * 1000)
     
-    # UUID v7 format: unix_ts_ms (48 bits) | ver (4 bits) | rand_a (12 bits) | var (2 bits) | rand_b (62 bits)
+    # Get 48-bit timestamp
     timestamp_bytes = timestamp_ms.to_bytes(6, 'big')
+    
+    # Generate random bytes for the rest
     random_bytes = uuid.uuid4().bytes
     
-    # Combine: first 6 bytes are timestamp, remaining 10 bytes include version and random
-    uuid_bytes = timestamp_bytes + random_bytes[6:]
+    # Build the UUID bytes
+    uuid_bytes = bytearray(16)
     
-    # Set version (7) in bits 48-51
-    uuid_bytes = uuid_bytes[:6] + bytes([0x70 | (uuid_bytes[6] & 0x0f)]) + uuid_bytes[7:]
+    # First 6 bytes: timestamp
+    uuid_bytes[0:6] = timestamp_bytes
     
-    # Set variant (10) in bits 64-65
-    uuid_bytes = uuid_bytes[:8] + bytes([0x80 | (uuid_bytes[8] & 0x3f)]) + uuid_bytes[9:]
+    # Byte 6: version (7) in high nibble + 4 bits of random
+    uuid_bytes[6] = 0x70 | (random_bytes[6] & 0x0f)
     
-    return str(uuid.UUID(bytes=uuid_bytes))
+    # Byte 7: random
+    uuid_bytes[7] = random_bytes[7]
+    
+    # Byte 8: variant (10) in high 2 bits + 6 bits of random
+    uuid_bytes[8] = 0x80 | (random_bytes[8] & 0x3f)
+    
+    # Bytes 9-15: random
+    uuid_bytes[9:16] = random_bytes[9:16]
+    
+    return str(uuid.UUID(bytes=bytes(uuid_bytes)))
 
 
 # Existing Profile Model

@@ -20,6 +20,9 @@ from database import Base, SessionLocal, generate_uuid_v7
 
 # PKCE Storage (temporary in-memory for CLI flow)
 # Maps state -> {code_verifier, created_at}
+# WARNING: In-memory storage is not suitable for production with multiple server instances.
+# For production, use Redis or database-backed storage.
+# TODO: Implement Redis-backed PKCE storage for horizontal scaling
 pkce_storage = {}
 
 # GitHub OAuth Configuration
