@@ -322,28 +322,22 @@ app = FastAPI(
 )
 
 # Parse CORS origins (comma-separated)
-cors_origins_env = os.getenv("CORS_ORIGINS", "*")
-if cors_origins_env and cors_origins_env != "*":
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if cors_origins_env:
     allow_origins = [origin.strip() for origin in cors_origins_env.split(",")]
-    cors_kwargs = {
-        "allow_origins": allow_origins,
-        "allow_credentials": True,
-    }
 else:
-    # When using wildcard, can't use credentials per CORS spec
-    cors_kwargs = {
-        "allow_origin_regex": ".*",
-        "allow_credentials": True,
-    }
+    # Allow all common origins for testing and development
+    allow_origins = ["*"]
 
 # CORS middleware - must be FIRST to handle preflight requests
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
     max_age=600,
-    **cors_kwargs,
 )
 
 # Add other middleware (order matters - last added runs first)
@@ -419,7 +413,7 @@ async def github_auth(request: Request, flow: str = "web"):
 
 
 @app.get("/auth/github/callback")
-async def github_callback_get(code: str, state: str):
+async def github_callback_get(code: str = None, state: str = None):
     """Handle GitHub OAuth callback (GET - for browser/web flow)"""
     return await handle_github_callback(code, state, None)
 
@@ -427,7 +421,10 @@ async def github_callback_get(code: str, state: str):
 @app.post("/auth/github/callback")
 async def github_callback_post(request: Request):
     """Handle GitHub OAuth callback (POST - for CLI flow)"""
-    body = await request.json()
+    try:
+        body = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail={"status": "error", "message": "Invalid JSON body"})
     return await handle_github_callback(
         body.get("code"),
         body.get("state"),
