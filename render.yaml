@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: Stage_1_BE
+    runtime: docker
+    repo: https://github.com/Noxx2005/Stage_1_BE
+    plan: free
