@@ -599,9 +599,11 @@ async def handle_github_callback(code: str = None, state: str = None, provided_c
             }
         }
         
-        # For web flow, set cookies and redirect to frontend
+        # For web flow, set cookies and redirect to frontend dashboard
         if flow_type == "web":
-            response = RedirectResponse(url=FRONTEND_URL)
+            # Redirect to /dashboard (matching friend's implementation)
+            dashboard_url = FRONTEND_URL.rstrip('/') + "/dashboard"
+            response = RedirectResponse(url=dashboard_url)
             
             # Determine if we should use secure cookies (HTTPS)
             # In development (localhost), secure=False allows cookies to work
