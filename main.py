@@ -603,6 +603,23 @@ async def get_me(current_user: UserDB = Depends(get_current_user)):
     }
 
 
+@app.get("/api/users/me")
+async def get_current_user_info(current_user: UserDB = Depends(get_current_user)):
+    """Get current user info (alternative endpoint for compatibility)"""
+    return {
+        "status": "success",
+        "data": {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "avatar_url": current_user.avatar_url,
+            "role": current_user.role,
+            "is_active": current_user.is_active,
+            "created_at": current_user.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
+    }
+
+
 # Profile Endpoints (All protected by auth middleware)
 
 @app.post("/api/profiles", response_model=SuccessResponseSingle, status_code=201)
