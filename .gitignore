@@ -53,3 +53,5 @@ Thumbs.db
 # Sub-repositories (CLI and Web have their own git)
 cli/
 web/
+/genderise-api-main
+/HNGinsighta-Web-main
