@@ -321,21 +321,30 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# Add middleware
+# Parse CORS origins (comma-separated)
+cors_origins_env = os.getenv("CORS_ORIGINS", "*")
+if cors_origins_env and cors_origins_env != "*":
+    allow_origins = [origin.strip() for origin in cors_origins_env.split(",")]
+else:
+    allow_origins = ["*"]
+
+# CORS middleware - must be FIRST to handle preflight requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
+)
+
+# Add other middleware (order matters - last added runs first)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(APIVersionMiddleware)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(CSRFMiddleware)
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[os.getenv("CORS_ORIGINS", "*")],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 @app.on_event("startup")
@@ -379,7 +388,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def github_auth(request: Request, flow: str = "web"):
     """
     Initiate GitHub OAuth flow.
-    flow: 'web' for browser flow, 'cli' for CLI flow
+    Redirects to GitHub OAuth page with PKCE parameters.
     """
     code_verifier, code_challenge = generate_pkce_challenge()
     state = generate_state()
@@ -387,17 +396,10 @@ async def github_auth(request: Request, flow: str = "web"):
     # Store PKCE data
     store_pkce_data(state, code_verifier, flow)
     
-    # Build OAuth URL
+    # Build OAuth URL and redirect
     oauth_url = get_github_oauth_url(state, code_challenge, flow)
     
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "success",
-            "oauth_url": oauth_url,
-            "state": state
-        }
-    )
+    return RedirectResponse(url=oauth_url)
 
 
 @app.get("/auth/github/callback")
@@ -417,8 +419,21 @@ async def github_callback_post(request: Request):
     )
 
 
-async def handle_github_callback(code: str, state: str, provided_code_verifier: str = None):
+async def handle_github_callback(code: str = None, state: str = None, provided_code_verifier: str = None):
     """Handle GitHub OAuth callback for both web and CLI flows"""
+    # Validate required parameters
+    if not code:
+        raise HTTPException(
+            status_code=400,
+            detail={"status": "error", "message": "Authorization code is required"}
+        )
+    
+    if not state:
+        raise HTTPException(
+            status_code=400,
+            detail={"status": "error", "message": "State parameter is required"}
+        )
+    
     code_verifier = None
     flow_type = "web"
     
