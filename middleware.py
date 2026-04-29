@@ -21,10 +21,11 @@ from database import SessionLocal, UserDB
 # Structure: {client_id: [(timestamp, endpoint), ...]}
 request_history = defaultdict(list)
 
-# Rate limit configuration
-AUTH_RATE_LIMIT = int(os.getenv("AUTH_RATE_LIMIT", "100"))  # requests per minute for auth endpoints
-API_RATE_LIMIT = int(os.getenv("API_RATE_LIMIT", "200"))   # requests per minute for other endpoints
+# Rate limit configuration (per requirements: 10/min for auth, 60/min for API)
+AUTH_RATE_LIMIT = int(os.getenv("AUTH_RATE_LIMIT", "10"))   # 10 requests per minute for auth endpoints
+API_RATE_LIMIT = int(os.getenv("API_RATE_LIMIT", "60"))     # 60 requests per minute for other endpoints
 RATE_LIMIT_WINDOW = 60  # 60 seconds
+RATE_LIMIT_CLEANUP_THRESHOLD = 1000  # Clean up when storage exceeds this many entries
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -83,6 +84,10 @@ def check_rate_limit(client_id: str, endpoint: str, limit: int) -> bool:
     now = time.time()
     window_start = now - RATE_LIMIT_WINDOW
     
+    # Periodic cleanup of old entries to prevent memory leak
+    if len(request_history) > RATE_LIMIT_CLEANUP_THRESHOLD:
+        cleanup_rate_limit_storage(window_start)
+    
     # Get existing requests for this client
     requests = request_history[client_id]
     
@@ -99,6 +104,22 @@ def check_rate_limit(client_id: str, endpoint: str, limit: int) -> bool:
     # Record this request
     recent_requests.append((now, endpoint))
     return True
+
+
+def cleanup_rate_limit_storage(window_start: float):
+    """Clean up expired entries from rate limit storage to prevent memory leak"""
+    expired_clients = []
+    for client_id, requests in request_history.items():
+        # Filter to only recent requests
+        recent = [req for req in requests if req[0] > window_start]
+        if not recent:
+            expired_clients.append(client_id)
+        else:
+            request_history[client_id] = recent
+    
+    # Remove clients with no recent requests
+    for client_id in expired_clients:
+        del request_history[client_id]
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):

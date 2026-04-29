@@ -17,7 +17,19 @@ from sqlalchemy.orm import Session
 from database import UserDB, RefreshTokenDB, generate_uuid_v7, SessionLocal
 
 # JWT Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
+# In production, JWT_SECRET_KEY MUST be set. In development, a random key is acceptable.
+_jwt_secret = os.getenv("JWT_SECRET_KEY")
+if not _jwt_secret:
+    import warnings
+    warnings.warn(
+        "JWT_SECRET_KEY is not set. Using a random key. "
+        "This will invalidate all tokens on server restart. "
+        "Set JWT_SECRET_KEY environment variable in production.",
+        RuntimeWarning
+    )
+    _jwt_secret = secrets.token_urlsafe(32)
+
+SECRET_KEY = _jwt_secret
 ALGORITHM = "HS256"
 
 # Token expiry times
@@ -125,6 +137,26 @@ def revoke_all_user_tokens(db: Session, user_id: str):
         token.revoked_at = now
     
     db.commit()
+
+
+def cleanup_expired_tokens(db: Session) -> int:
+    """
+    Remove expired and revoked refresh tokens from the database.
+    Returns the number of tokens deleted.
+    Call this periodically (e.g., via a background job or on startup).
+    """
+    now = datetime.now(timezone.utc)
+    
+    # Delete tokens that are expired OR revoked more than 24 hours ago
+    expired_threshold = now - timedelta(hours=24)
+    
+    deleted_count = db.query(RefreshTokenDB).filter(
+        (RefreshTokenDB.expires_at < now) |
+        (RefreshTokenDB.revoked_at < expired_threshold)
+    ).delete(synchronize_session=False)
+    
+    db.commit()
+    return deleted_count
 
 
 def rotate_refresh_token(db: Session, old_token: str, device_info: Optional[str] = None) -> Tuple[str, str]:

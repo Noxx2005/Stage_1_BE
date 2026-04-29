@@ -1,13 +1,15 @@
 """
 Insighta Labs+ - Stage 3 Backend
 FastAPI + SQLite with Authentication, RBAC, and Multi-Interface Support
-Version: 2025-01-29-v2
 """
 
 import os
 import csv
 import io
 import re
+import asyncio
+import secrets
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional, Union
 
@@ -31,7 +33,7 @@ from database import (
 from jwt_handler import (
     create_access_token, create_refresh_token, verify_refresh_token,
     revoke_refresh_token, rotate_refresh_token, get_current_user,
-    require_role, require_admin, security
+    require_role, require_admin, security, cleanup_expired_tokens
 )
 from auth import (
     generate_pkce_challenge, generate_state, store_pkce_data, get_pkce_data,
@@ -142,23 +144,45 @@ class UserResponse(BaseModel):
     created_at: str
 
 
-# External API calls
+# Shared HTTP client for connection pooling (initialized on startup)
+http_client: httpx.AsyncClient = None
+
+
+async def get_http_client() -> httpx.AsyncClient:
+    """Get the shared HTTP client, creating if needed"""
+    global http_client
+    if http_client is None:
+        http_client = httpx.AsyncClient(timeout=10.0)
+    return http_client
+
+
+# External API calls with shared client for connection pooling
 async def call_genderize_api(name: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"https://api.genderize.io?name={name}")
-        return response.json()
+    client = await get_http_client()
+    response = await client.get(f"https://api.genderize.io?name={name}")
+    return response.json()
 
 
 async def call_agify_api(name: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"https://api.agify.io?name={name}")
-        return response.json()
+    client = await get_http_client()
+    response = await client.get(f"https://api.agify.io?name={name}")
+    return response.json()
 
 
 async def call_nationalize_api(name: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"https://api.nationalize.io?name={name}")
-        return response.json()
+    client = await get_http_client()
+    response = await client.get(f"https://api.nationalize.io?name={name}")
+    return response.json()
+
+
+async def call_all_external_apis(name: str) -> tuple:
+    """Call all external APIs in parallel for better performance"""
+    genderize_data, agify_data, nationalize_data = await asyncio.gather(
+        call_genderize_api(name),
+        call_agify_api(name),
+        call_nationalize_api(name)
+    )
+    return genderize_data, agify_data, nationalize_data
 
 
 # Classification logic
@@ -199,6 +223,9 @@ COUNTRY_NAME_TO_ID = {
     'madagascar': 'MG', 'mauritius': 'MU', 'seychelles': 'SC', 'lesotho': 'LS',
     'eswatini': 'SZ', 'namibia': 'NA',
 }
+
+# Reverse mapping: Country ID to Country Name
+COUNTRY_ID_TO_NAME = {v: k.title() for k, v in COUNTRY_NAME_TO_ID.items()}
 
 
 def parse_natural_language_query(query: str) -> dict:
@@ -315,26 +342,71 @@ def build_pagination_links(base_path: str, page: int, limit: int, total: int, fi
     return links
 
 
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler for startup and shutdown events"""
+    # Startup
+    global http_client
+    http_client = httpx.AsyncClient(timeout=10.0)
+    init_db()
+    print("Database initialized")
+    print("HTTP client initialized")
+    
+    # Cleanup expired tokens on startup
+    db = SessionLocal()
+    try:
+        deleted = cleanup_expired_tokens(db)
+        if deleted > 0:
+            print(f"Cleaned up {deleted} expired/revoked tokens")
+    finally:
+        db.close()
+    
+    yield
+    
+    # Shutdown
+    if http_client:
+        await http_client.aclose()
+        print("HTTP client closed")
+
+
 # FastAPI app
 app = FastAPI(
     title="Insighta Labs+ - Stage 3",
     description="Secure Profile Intelligence System with Authentication and Multi-Interface Support",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 # Parse CORS origins (comma-separated)
+# Note: allow_credentials=True is incompatible with allow_origins=["*"]
+# In production, CORS_ORIGINS must be set to specific origins
 cors_origins_env = os.getenv("CORS_ORIGINS", "")
+IS_DEVELOPMENT = os.getenv("ENVIRONMENT", "development") == "development"
+
 if cors_origins_env:
     allow_origins = [origin.strip() for origin in cors_origins_env.split(",")]
+    allow_credentials = True
 else:
-    # Allow all common origins for testing and development
-    allow_origins = ["*"]
+    if IS_DEVELOPMENT:
+        # In development, allow common localhost ports
+        allow_origins = [
+            "http://localhost:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:8000",
+        ]
+        allow_credentials = True
+    else:
+        # In production without CORS_ORIGINS, use wildcard (no credentials)
+        allow_origins = ["*"]
+        allow_credentials = False
 
 # CORS middleware - must be FIRST to handle preflight requests
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=True,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -347,13 +419,6 @@ app.add_middleware(LoggingMiddleware)
 app.add_middleware(APIVersionMiddleware)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(CSRFMiddleware)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup"""
-    init_db()
-    print("Database initialized")
 
 
 # Error handlers
@@ -400,7 +465,6 @@ async def github_auth(request: Request, flow: str = "web"):
     """
     Initiate GitHub OAuth flow.
     Redirects to GitHub OAuth page with PKCE parameters.
-    Build: v2025-01-29-v3
     """
     code_verifier, code_challenge = generate_pkce_challenge()
     state = generate_state()
@@ -539,12 +603,19 @@ async def handle_github_callback(code: str = None, state: str = None, provided_c
         if flow_type == "web":
             response = RedirectResponse(url=FRONTEND_URL)
             
+            # Determine if we should use secure cookies (HTTPS)
+            # In development (localhost), secure=False allows cookies to work
+            is_secure = not IS_DEVELOPMENT
+            
+            # Generate CSRF token for web flow
+            csrf_token = secrets.token_urlsafe(32)
+            
             # Set HTTP-only cookies
             response.set_cookie(
                 key="access_token",
                 value=access_token,
                 httponly=True,
-                secure=True,
+                secure=is_secure,
                 samesite="lax",
                 max_age=180  # 3 minutes
             )
@@ -552,9 +623,18 @@ async def handle_github_callback(code: str = None, state: str = None, provided_c
                 key="refresh_token",
                 value=refresh_token,
                 httponly=True,
-                secure=True,
+                secure=is_secure,
                 samesite="lax",
                 max_age=300  # 5 minutes
+            )
+            # CSRF token cookie (readable by JavaScript)
+            response.set_cookie(
+                key="csrf_token",
+                value=csrf_token,
+                httponly=False,  # Must be readable by JS
+                secure=is_secure,
+                samesite="lax",
+                max_age=180  # Same as access token
             )
             
             return response
@@ -586,62 +666,70 @@ async def refresh_token(request: RefreshRequest):
         db.close()
 
 
-@app.post("/auth/logout", response_model=LogoutResponse)
-async def logout(request: RefreshRequest):
-    """Logout - invalidate refresh token"""
+@app.post("/auth/logout")
+async def logout(request: Request, body: RefreshRequest = None):
+    """
+    Logout - invalidate refresh token and clear cookies.
+    Supports both API (JSON body) and Web (cookie-based) flows.
+    """
     db = SessionLocal()
     try:
-        revoke_refresh_token(db, request.refresh_token)
+        # Try to get refresh token from body (API flow) or cookie (Web flow)
+        refresh_token_value = None
+        if body and body.refresh_token:
+            refresh_token_value = body.refresh_token
+        else:
+            refresh_token_value = request.cookies.get("refresh_token")
         
-        return LogoutResponse(
-            status="success",
-            message="Successfully logged out"
+        if refresh_token_value:
+            revoke_refresh_token(db, refresh_token_value)
+        
+        # Create response
+        response = JSONResponse(
+            status_code=200,
+            content={"status": "success", "message": "Successfully logged out"}
         )
+        
+        # Clear all auth cookies for web flow
+        is_secure = not IS_DEVELOPMENT
+        response.delete_cookie(key="access_token", secure=is_secure, samesite="lax")
+        response.delete_cookie(key="refresh_token", secure=is_secure, samesite="lax")
+        response.delete_cookie(key="csrf_token", secure=is_secure, samesite="lax")
+        
+        return response
     finally:
         db.close()
 
 
-async def get_current_user_from_cookie_or_header(request: Request) -> UserDB:
-    """Get current user from cookie (web) or header (CLI)"""
-    token = None
+@app.get("/auth/csrf")
+async def get_csrf_token():
+    """
+    Generate and return a CSRF token for web portal use.
+    The token is also set as a cookie for convenience.
+    """
+    csrf_token = secrets.token_urlsafe(32)
     
-    # Try cookie first (web portal)
-    token = request.cookies.get("access_token")
+    response = JSONResponse(
+        status_code=200,
+        content={"status": "success", "csrf_token": csrf_token}
+    )
     
-    # Fall back to Authorization header (CLI)
-    if not token:
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header.replace("Bearer ", "")
+    # Set CSRF token as cookie (readable by JavaScript)
+    is_secure = not IS_DEVELOPMENT
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,  # Must be readable by JS
+        secure=is_secure,
+        samesite="lax",
+        max_age=180  # 3 minutes
+    )
     
-    if not token:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    
-    # Verify token
-    payload = verify_access_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired access token")
-    
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-    
-    db = SessionLocal()
-    try:
-        user = db.query(UserDB).filter(UserDB.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-        
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="User account is deactivated")
-        
-        return user
-    finally:
-        db.close()
+    return response
 
 
 @app.get("/auth/me")
-async def get_me(request: Request, current_user: UserDB = Depends(get_current_user_from_cookie_or_header)):
+async def get_me(current_user: UserDB = Depends(get_current_user)):
     """Get current user info"""
     return {
         "status": "success",
@@ -649,8 +737,10 @@ async def get_me(request: Request, current_user: UserDB = Depends(get_current_us
             "id": current_user.id,
             "username": current_user.username,
             "email": current_user.email,
+            "avatar_url": current_user.avatar_url,
             "role": current_user.role,
-            "avatar_url": current_user.avatar_url
+            "is_active": current_user.is_active,
+            "created_at": current_user.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
         }
     }
 
@@ -670,6 +760,26 @@ async def get_current_user_info(current_user: UserDB = Depends(get_current_user)
             "created_at": current_user.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
         }
     }
+
+
+# Admin Endpoints
+
+@app.post("/api/admin/cleanup-tokens")
+async def admin_cleanup_tokens(current_user: UserDB = Depends(require_role("admin"))):
+    """
+    Manually trigger cleanup of expired/revoked refresh tokens.
+    Admin only.
+    """
+    db = SessionLocal()
+    try:
+        deleted = cleanup_expired_tokens(db)
+        return {
+            "status": "success",
+            "message": f"Cleaned up {deleted} expired/revoked tokens",
+            "deleted_count": deleted
+        }
+    finally:
+        db.close()
 
 
 # Profile Endpoints (All protected by auth middleware)
@@ -715,11 +825,9 @@ async def create_profile(
             )
         )
     
-    # Call external APIs
+    # Call external APIs in parallel for better performance
     try:
-        genderize_data = await call_genderize_api(request.name)
-        agify_data = await call_agify_api(request.name)
-        nationalize_data = await call_nationalize_api(request.name)
+        genderize_data, agify_data, nationalize_data = await call_all_external_apis(request.name)
     except Exception as e:
         raise HTTPException(
             status_code=502,
@@ -770,7 +878,7 @@ async def create_profile(
         age=age,
         age_group=age_group,
         country_id=country_id,
-        country_name=COUNTRY_NAME_TO_ID.get(country_id.lower(), ""),
+        country_name=COUNTRY_ID_TO_NAME.get(country_id.upper(), ""),
         country_probability=country_probability,
         created_at=datetime.now(timezone.utc),
         created_by=current_user.id
@@ -965,60 +1073,7 @@ async def search_profiles(
     )
 
 
-@app.get("/api/profiles/{profile_id}", response_model=SuccessResponseSingle)
-async def get_profile(
-    profile_id: str,
-    current_user: UserDB = Depends(get_current_user)
-):
-    """Get a single profile by ID"""
-    db = next(get_db())
-    profile = db.query(ProfileDB).filter(ProfileDB.id == profile_id).first()
-    
-    if not profile:
-        raise HTTPException(
-            status_code=404,
-            detail={"status": "error", "message": "Profile not found"}
-        )
-    
-    return SuccessResponseSingle(
-        status="success",
-        data=ProfileResponse(
-            id=profile.id,
-            name=profile.name,
-            gender=profile.gender,
-            gender_probability=profile.gender_probability,
-            sample_size=profile.sample_size,
-            age=profile.age,
-            age_group=profile.age_group,
-            country_id=profile.country_id,
-            country_name=profile.country_name,
-            country_probability=profile.country_probability,
-            created_at=profile.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        )
-    )
-
-
-@app.delete("/api/profiles/{profile_id}", status_code=204)
-async def delete_profile(
-    profile_id: str,
-    current_user: UserDB = Depends(require_role("admin"))
-):
-    """Delete a profile (Admin only)"""
-    db = next(get_db())
-    profile = db.query(ProfileDB).filter(ProfileDB.id == profile_id).first()
-    
-    if not profile:
-        raise HTTPException(
-            status_code=404,
-            detail={"status": "error", "message": "Profile not found"}
-        )
-    
-    db.delete(profile)
-    db.commit()
-    
-    return None
-
-
+# NOTE: /export must be defined BEFORE /{profile_id} to avoid route matching issues
 @app.get("/api/profiles/export")
 async def export_profiles(
     format: str = Query("csv", description="Export format (csv)"),
@@ -1038,67 +1093,130 @@ async def export_profiles(
             detail={"status": "error", "message": "Only CSV format is supported"}
         )
     
-    db = next(get_db())
-    query = db.query(ProfileDB)
-    
-    # Apply same filters as list endpoint
-    if gender:
-        query = query.filter(ProfileDB.gender.ilike(gender))
-    if country_id:
-        query = query.filter(ProfileDB.country_id.ilike(country_id))
-    if age_group:
-        query = query.filter(ProfileDB.age_group.ilike(age_group))
-    if min_age is not None:
-        query = query.filter(ProfileDB.age >= min_age)
-    if max_age is not None:
-        query = query.filter(ProfileDB.age <= max_age)
-    
-    # Apply sorting
-    if sort_by:
-        valid_sort_fields = {
-            'age': ProfileDB.age,
-            'created_at': ProfileDB.created_at,
-            'gender_probability': ProfileDB.gender_probability
-        }
-        if sort_by in valid_sort_fields:
-            sort_field = valid_sort_fields[sort_by]
-            if order.lower() == 'desc':
-                query = query.order_by(sort_field.desc())
-            else:
-                query = query.order_by(sort_field.asc())
-    
-    profiles = query.all()
-    
-    # Generate CSV
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    # Write header
-    writer.writerow([
-        'id', 'name', 'gender', 'gender_probability', 'age', 'age_group',
-        'country_id', 'country_name', 'country_probability', 'created_at'
-    ])
-    
-    # Write data
-    for p in profiles:
+    db = SessionLocal()
+    try:
+        query = db.query(ProfileDB)
+        
+        # Apply same filters as list endpoint
+        if gender:
+            query = query.filter(ProfileDB.gender.ilike(gender))
+        if country_id:
+            query = query.filter(ProfileDB.country_id.ilike(country_id))
+        if age_group:
+            query = query.filter(ProfileDB.age_group.ilike(age_group))
+        if min_age is not None:
+            query = query.filter(ProfileDB.age >= min_age)
+        if max_age is not None:
+            query = query.filter(ProfileDB.age <= max_age)
+        
+        # Apply sorting
+        if sort_by:
+            valid_sort_fields = {
+                'age': ProfileDB.age,
+                'created_at': ProfileDB.created_at,
+                'gender_probability': ProfileDB.gender_probability
+            }
+            if sort_by in valid_sort_fields:
+                sort_field = valid_sort_fields[sort_by]
+                if order.lower() == 'desc':
+                    query = query.order_by(sort_field.desc())
+                else:
+                    query = query.order_by(sort_field.asc())
+        
+        profiles = query.all()
+        
+        # Generate CSV
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
         writer.writerow([
-            p.id, p.name, p.gender, p.gender_probability, p.age, p.age_group,
-            p.country_id, p.country_name, p.country_probability,
-            p.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            'id', 'name', 'gender', 'gender_probability', 'age', 'age_group',
+            'country_id', 'country_name', 'country_probability', 'created_at'
         ])
-    
-    output.seek(0)
-    
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"profiles_{timestamp}.csv"
-    
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        }
-    )
+        
+        # Write data
+        for p in profiles:
+            writer.writerow([
+                p.id, p.name, p.gender, p.gender_probability, p.age, p.age_group,
+                p.country_id, p.country_name, p.country_probability,
+                p.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            ])
+        
+        output.seek(0)
+        
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"profiles_{timestamp}.csv"
+        
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    finally:
+        db.close()
+
+
+@app.get("/api/profiles/{profile_id}", response_model=SuccessResponseSingle)
+async def get_profile(
+    profile_id: str,
+    current_user: UserDB = Depends(get_current_user)
+):
+    """Get a single profile by ID"""
+    db = SessionLocal()
+    try:
+        profile = db.query(ProfileDB).filter(ProfileDB.id == profile_id).first()
+        
+        if not profile:
+            raise HTTPException(
+                status_code=404,
+                detail={"status": "error", "message": "Profile not found"}
+            )
+        
+        return SuccessResponseSingle(
+            status="success",
+            data=ProfileResponse(
+                id=profile.id,
+                name=profile.name,
+                gender=profile.gender,
+                gender_probability=profile.gender_probability,
+                sample_size=profile.sample_size,
+                age=profile.age,
+                age_group=profile.age_group,
+                country_id=profile.country_id,
+                country_name=profile.country_name,
+                country_probability=profile.country_probability,
+                created_at=profile.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            )
+        )
+    finally:
+        db.close()
+
+
+@app.delete("/api/profiles/{profile_id}", status_code=204)
+async def delete_profile(
+    profile_id: str,
+    current_user: UserDB = Depends(require_role("admin"))
+):
+    """Delete a profile (Admin only)"""
+    db = SessionLocal()
+    try:
+        profile = db.query(ProfileDB).filter(ProfileDB.id == profile_id).first()
+        
+        if not profile:
+            raise HTTPException(
+                status_code=404,
+                detail={"status": "error", "message": "Profile not found"}
+            )
+        
+        db.delete(profile)
+        db.commit()
+        
+        return None
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
