@@ -22,8 +22,8 @@ from database import SessionLocal, UserDB
 request_history = defaultdict(list)
 
 # Rate limit configuration
-AUTH_RATE_LIMIT = 10  # 10 requests per minute for auth endpoints
-API_RATE_LIMIT = 60   # 60 requests per minute for other endpoints
+AUTH_RATE_LIMIT = int(os.getenv("AUTH_RATE_LIMIT", "100"))  # requests per minute for auth endpoints
+API_RATE_LIMIT = int(os.getenv("API_RATE_LIMIT", "200"))   # requests per minute for other endpoints
 RATE_LIMIT_WINDOW = 60  # 60 seconds
 
 

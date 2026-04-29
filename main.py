@@ -325,18 +325,25 @@ app = FastAPI(
 cors_origins_env = os.getenv("CORS_ORIGINS", "*")
 if cors_origins_env and cors_origins_env != "*":
     allow_origins = [origin.strip() for origin in cors_origins_env.split(",")]
+    cors_kwargs = {
+        "allow_origins": allow_origins,
+        "allow_credentials": True,
+    }
 else:
-    allow_origins = ["*"]
+    # When using wildcard, can't use credentials per CORS spec
+    cors_kwargs = {
+        "allow_origin_regex": ".*",
+        "allow_credentials": True,
+    }
 
 # CORS middleware - must be FIRST to handle preflight requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
     max_age=600,
+    **cors_kwargs,
 )
 
 # Add other middleware (order matters - last added runs first)
