@@ -14,7 +14,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Depends, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -505,10 +505,29 @@ async def handle_github_callback(code: str, state: str, provided_code_verifier: 
             }
         }
         
-        # For web flow, redirect to frontend with tokens
+        # For web flow, set cookies and redirect to frontend
         if flow_type == "web":
-            # In production, redirect to frontend
-            return JSONResponse(status_code=200, content=token_response)
+            response = RedirectResponse(url=FRONTEND_URL)
+            
+            # Set HTTP-only cookies
+            response.set_cookie(
+                key="access_token",
+                value=access_token,
+                httponly=True,
+                secure=True,
+                samesite="lax",
+                max_age=180  # 3 minutes
+            )
+            response.set_cookie(
+                key="refresh_token",
+                value=refresh_token,
+                httponly=True,
+                secure=True,
+                samesite="lax",
+                max_age=300  # 5 minutes
+            )
+            
+            return response
         
         # For CLI flow, return tokens directly
         return JSONResponse(status_code=200, content=token_response)
