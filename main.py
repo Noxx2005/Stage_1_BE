@@ -601,8 +601,47 @@ async def logout(request: RefreshRequest):
         db.close()
 
 
+async def get_current_user_from_cookie_or_header(request: Request) -> UserDB:
+    """Get current user from cookie (web) or header (CLI)"""
+    token = None
+    
+    # Try cookie first (web portal)
+    token = request.cookies.get("access_token")
+    
+    # Fall back to Authorization header (CLI)
+    if not token:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header.replace("Bearer ", "")
+    
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Verify token
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired access token")
+    
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+    
+    db = SessionLocal()
+    try:
+        user = db.query(UserDB).filter(UserDB.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="User account is deactivated")
+        
+        return user
+    finally:
+        db.close()
+
+
 @app.get("/auth/me")
-async def get_me(current_user: UserDB = Depends(get_current_user)):
+async def get_me(request: Request, current_user: UserDB = Depends(get_current_user_from_cookie_or_header)):
     """Get current user info"""
     return {
         "status": "success",
@@ -610,10 +649,8 @@ async def get_me(current_user: UserDB = Depends(get_current_user)):
             "id": current_user.id,
             "username": current_user.username,
             "email": current_user.email,
-            "avatar_url": current_user.avatar_url,
             "role": current_user.role,
-            "is_active": current_user.is_active,
-            "created_at": current_user.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            "avatar_url": current_user.avatar_url
         }
     }
 
