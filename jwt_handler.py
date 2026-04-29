@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 
 from jose import JWTError, jwt
 from fastapi import HTTPException, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 
 from database import UserDB, RefreshTokenDB, generate_uuid_v7, SessionLocal
@@ -206,9 +206,24 @@ def get_current_user_from_token(token: str) -> Optional[UserDB]:
         db.close()
 
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = security) -> UserDB:
-    """FastAPI dependency to get current user from bearer token"""
-    token = credentials.credentials
+async def get_current_user(request: Request) -> UserDB:
+    """
+    FastAPI dependency to get current user from cookie (web) or bearer token (CLI).
+    Checks cookies first, then falls back to Authorization header.
+    """
+    token = None
+    
+    # Try cookie first (web portal flow)
+    token = request.cookies.get("access_token")
+    
+    # Fall back to Authorization header (CLI flow)
+    if not token:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]  # Remove "Bearer " prefix
+    
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
     
     payload = verify_access_token(token)
     if not payload:
@@ -234,8 +249,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = security)
 
 def require_role(required_role: str):
     """Decorator to require specific role"""
-    async def role_checker(credentials: HTTPAuthorizationCredentials = security):
-        user = await get_current_user(credentials)
+    async def role_checker(request: Request):
+        user = await get_current_user(request)
         
         if user.role != required_role and user.role != "admin":
             raise HTTPException(
@@ -248,6 +263,7 @@ def require_role(required_role: str):
     return role_checker
 
 
-def require_admin(credentials: HTTPAuthorizationCredentials = security) -> UserDB:
+async def require_admin(request: Request) -> UserDB:
     """Require admin role"""
-    return require_role("admin")(credentials)
+    checker = require_role("admin")
+    return await checker(request)
