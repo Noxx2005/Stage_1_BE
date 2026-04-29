@@ -1,6 +1,7 @@
 """
 Insighta Labs+ - Stage 3 Backend
 FastAPI + SQLite with Authentication, RBAC, and Multi-Interface Support
+Version: 2025-01-29-v2
 """
 
 import os
@@ -399,6 +400,7 @@ async def github_auth(request: Request, flow: str = "web"):
     """
     Initiate GitHub OAuth flow.
     Redirects to GitHub OAuth page with PKCE parameters.
+    Build: v2025-01-29-v3
     """
     code_verifier, code_challenge = generate_pkce_challenge()
     state = generate_state()
