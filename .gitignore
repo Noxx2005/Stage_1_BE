@@ -1,0 +1,84 @@
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+.dotnet/
+.nuget/
+
+# Visual Studio cache/options
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ReSharper
+.idea/
+*.resharper
+*.resharper.user
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+hng_stage_one.db
+
+# Docker
+docker-compose.override.yml
+.env
+!.env.example
+
+# Node modules (if any frontend)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Package management
+package-lock.json
+yarn.lock
+
+# Misc
+*.log
+*.log.*
+.idea/
+*.swp
+*.swo
+*~
+.env.local
+.env.*.local
+
+# Data directory (SQLite storage)
+!data/.gitkeep

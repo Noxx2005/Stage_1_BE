@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hng_stage_one_api
+    ports:
+      - "8080:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
+      - ASPNETCORE_URLS=http://0.0.0.0:8080
+      - ConnectionStrings__DefaultConnection=Data Source=/app/data/hng_stage_one.db
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173}
+      - Auth__BackendPublicUrl=${Auth__BackendPublicUrl:-http://localhost:8080}
+      - Auth__WebPortalUrl=${Auth__WebPortalUrl:-http://localhost:5173}
+      - Auth__AdminGitHubUsernames=${Auth__AdminGitHubUsernames}
+      - GitHub__ClientId=${GitHub__ClientId}
+      - GitHub__ClientSecret=${GitHub__ClientSecret}
+      - Jwt__Issuer=${Jwt__Issuer:-insighta-labs}
+      - Jwt__Audience=${Jwt__Audience:-insighta-labs-clients}
+      - Jwt__SigningKey=${Jwt__SigningKey:-replace_with_a_long_random_secret_at_least_32_chars}
+      - Jwt__AccessTokenMinutes=${Jwt__AccessTokenMinutes:-15}
+      - Jwt__RefreshTokenMinutes=${Jwt__RefreshTokenMinutes:-10080}
+      - Auth__OAuthSessionMinutes=${Auth__OAuthSessionMinutes:-10}
+      - RateLimit__AuthPermitLimit=${RateLimit__AuthPermitLimit:-20}
+      - RateLimit__ApiPermitLimit=${RateLimit__ApiPermitLimit:-120}
+      - RateLimit__WindowMinutes=${RateLimit__WindowMinutes:-1}
+      - ExternalApis__GenderizeBaseUrl=${ExternalApis__GenderizeBaseUrl:-https://api.genderize.io}
+      - ExternalApis__AgifyBaseUrl=${ExternalApis__AgifyBaseUrl:-https://api.agify.io}
+      - ExternalApis__NationalizeBaseUrl=${ExternalApis__NationalizeBaseUrl:-https://api.nationalize.io}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - hng_network
+
+networks:
+  hng_network:
+    driver: bridge
