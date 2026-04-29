@@ -383,6 +383,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Catch all unhandled exceptions to prevent 500 errors"""
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "message": "Internal server error"}
+    )
+
+
 # Auth Endpoints
 @app.get("/auth/github")
 async def github_auth(request: Request, flow: str = "web"):
