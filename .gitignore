@@ -46,3 +46,10 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Environment variables
+.env
+
+# Sub-repositories (CLI and Web have their own git)
+cli/
+web/

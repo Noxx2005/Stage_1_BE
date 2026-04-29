@@ -1,403 +1,362 @@
-# HNG Stage 1 & 2 - Profile API
+# Insighta Labs+ - Stage 3
 
-A FastAPI-based REST API that integrates with external APIs (Genderize, Agify, Nationalize) to create and manage profiles with persistence.
+A secure, multi-interface Profile Intelligence System with GitHub OAuth authentication, Role-Based Access Control (RBAC), and both CLI and Web Portal interfaces.
 
-## Features
+## System Architecture
 
-### Stage 1 Features
-- **External API Integration**: Fetches gender, age, and nationality data from free APIs
-- **Data Persistence**: SQLite database for storing profiles
-- **Idempotency**: Returns existing profile if name already exists
-- **Error Handling**: Proper HTTP status codes and error messages
-- **CORS Support**: Allows cross-origin requests
-- **UUID v7**: Time-ordered unique identifiers
-- **UTC Timestamps**: ISO 8601 format
-
-### Stage 2 Features
-- **Advanced Filtering**: Filter by gender, age_group, country_id, min_age, max_age, min_gender_probability, min_country_probability
-- **Sorting**: Sort results by age, created_at, or gender_probability in ascending or descending order
-- **Pagination**: Paginate results with configurable page size (max 50 per page)
-- **Natural Language Search**: Query profiles using plain English (e.g., "young males from nigeria")
-- **Database Seeding**: Pre-seeded with 2026 profiles from provided JSON data
-
-## API Endpoints
-
-### 1. Create Profile
-```http
-POST /api/profiles
-Content-Type: application/json
-
-{
-  "name": "ella"
-}
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   CLI Tool      │     │   Web Portal    │     │   External APIs  │
+│   (Node.js)     │     │   (React)       │     │   (Genderize,    │
+│                 │     │                 │     │   Agify,         │
+│  - PKCE Auth    │     │  - HTTP-only    │     │   Nationalize)   │
+│  - Local Server │     │    Cookies      │     │                  │
+│  - ~/.insighta/ │     │  - CSRF Prot.   │     │                  │
+│    credentials  │     │                 │     │                  │
+└────────┬────────┘     └────────┬────────┘     └─────────────────┘
+         │                       │                            │
+         │    Bearer Token      │    HTTP-only Cookies       │
+         └───────────┬───────────┴────────────┬─────────────┘
+                     │                          │
+                     └──────────┬───────────────┘
+                                │
+                    ┌─────────────▼─────────────┐
+                    │      Backend API          │
+                    │      (FastAPI)            │
+                    │                           │
+                    │  - JWT Auth (3min)        │
+                    │  - Refresh Tokens (5min)  │
+                    │  - RBAC (Admin/Analyst)   │
+                    │  - Rate Limiting          │
+                    │  - API Versioning         │
+                    └─────────────┬─────────────┘
+                                  │
+                    ┌─────────────▼─────────────┐
+                    │      SQLite Database        │
+                    │                             │
+                    │  - Users Table              │
+                    │  - Profiles Table           │
+                    │  - Refresh Tokens Table     │
+                    └─────────────────────────────┘
 ```
 
-**Success Response (201):**
+## Repository Structure
+
+This is a monorepo with three separate git repositories:
+
+```
+Stage_3_BE/
+├── .git/                      # Main backend repository
+├── main.py                    # Backend application
+├── auth.py                    # GitHub OAuth + PKCE
+├── jwt_handler.py             # Token management
+├── middleware.py              # Rate limiting, logging, auth
+├── database.py                # Database models
+├── requirements.txt           # Python dependencies
+├── cli/                       # CLI tool (separate git repo)
+│   ├── .git/
+│   ├── bin/insighta.js
+│   └── src/
+└── web/                       # Web portal (separate git repo)
+    ├── .git/
+    ├── src/
+    └── package.json
+```
+
+## Authentication Flow
+
+### CLI Authentication Flow (PKCE)
+
+```
+1. User runs: insighta login
+2. CLI generates:
+   - code_verifier (random secret)
+   - code_challenge (SHA256 hash)
+   - state (random string)
+3. CLI starts local HTTP server (localhost:8765)
+4. CLI opens browser with GitHub OAuth URL
+5. User authenticates with GitHub
+6. GitHub redirects to localhost:8765/callback
+7. CLI receives code + state
+8. CLI sends POST to /auth/github/callback:
+   {code, state, code_verifier}
+9. Backend exchanges code with GitHub
+10. Backend issues:
+    - Access token (3 min expiry)
+    - Refresh token (5 min expiry)
+11. CLI stores tokens in ~/.insighta/credentials.json
+12. CLI displays: "Logged in as @username"
+```
+
+### Web Authentication Flow
+
+```
+1. User clicks "Continue with GitHub"
+2. Backend generates PKCE params and stores state
+3. Backend redirects to GitHub OAuth
+4. User authenticates with GitHub
+5. GitHub redirects to /auth/github/callback
+6. Backend validates state, exchanges code
+7. Backend sets HTTP-only cookies:
+   - access_token (3 min)
+   - refresh_token (5 min)
+8. Backend redirects to frontend
+9. Frontend calls /auth/me to get user info
+```
+
+## Token Handling
+
+### Access Token
+- **Expiry**: 3 minutes
+- **Storage**: CLI (credentials.json) / Web (HTTP-only cookie)
+- **Usage**: Bearer token in Authorization header
+
+### Refresh Token
+- **Expiry**: 5 minutes
+- **Storage**: Database (hashed) + cookie/local storage
+- **Rotation**: Single-use, invalidated on refresh
+- **Flow**: POST /auth/refresh → new access + refresh tokens
+
+### Token Refresh (CLI)
+- Automatic: API client detects expired token
+- Manual: User prompted to re-login if refresh fails
+
+## Role Enforcement
+
+### Roles
+| Role | Permissions |
+|------|-------------|
+| admin | Create profiles, delete profiles, view all, search, export |
+| analyst | View all, search, export |
+
+### Enforcement Strategy
+All endpoints under `/api/*` require authentication via `AuthMiddleware`.
+
+Role checks use the `require_role()` decorator:
+
+```python
+@app.post("/api/profiles")
+async def create_profile(
+    current_user: UserDB = Depends(require_role("admin"))
+):
+    # Only admins can create
+    pass
+
+@app.delete("/api/profiles/{id}")
+async def delete_profile(
+    current_user: UserDB = Depends(require_role("admin"))
+):
+    # Only admins can delete
+    pass
+```
+
+## API Versioning
+
+All profile endpoints require header:
+```
+X-API-Version: 1
+```
+
+Missing header returns:
 ```json
 {
-  "status": "success",
-  "data": {
-    "id": "b3f9c1e2-7d4a-4c91-9c2a-1f0a8e5b6d12",
-    "name": "ella",
-    "gender": "female",
-    "gender_probability": 0.99,
-    "sample_size": 1234,
-    "age": 46,
-    "age_group": "adult",
-    "country_id": "DRC",
-    "country_probability": 0.85,
-    "created_at": "2026-04-01T12:00:00Z"
-  }
+  "status": "error",
+  "message": "API version header required"
 }
 ```
 
-**Existing Profile Response:**
-```json
-{
-  "status": "success",
-  "message": "Profile already exists",
-  "data": { ...existing profile... }
-}
-```
+## Pagination Response Format
 
-### 2. Get Single Profile
-```http
-GET /api/profiles/{id}
-```
-
-**Success Response (200):**
-```json
-{
-  "status": "success",
-  "data": {
-    "id": "...",
-    "name": "emmanuel",
-    "gender": "male",
-    "gender_probability": 0.99,
-    "sample_size": 1234,
-    "age": 25,
-    "age_group": "adult",
-    "country_id": "NG",
-    "country_probability": 0.85,
-    "created_at": "2026-04-01T12:00:00Z"
-  }
-}
-```
-
-### 3. Get All Profiles (with optional filters)
-```http
-GET /api/profiles
-GET /api/profiles?gender=male
-GET /api/profiles?country_id=NG
-GET /api/profiles?age_group=adult
-GET /api/profiles?gender=male&country_id=NG&age_group=adult
-GET /api/profiles?min_age=25&max_age=50&sort_by=age&order=desc&page=1&limit=10
-```
-
-**Success Response (200):**
 ```json
 {
   "status": "success",
   "page": 1,
   "limit": 10,
   "total": 2026,
-  "data": [
-    {
-      "id": "id-1",
-      "name": "emmanuel",
-      "gender": "male",
-      "gender_probability": 0.99,
-      "age": 25,
-      "age_group": "adult",
-      "country_id": "NG",
-      "country_name": "Nigeria",
-      "country_probability": 0.85,
-      "created_at": "2026-04-01T12:00:00Z"
-    }
-  ]
-}
-```
-
-**Supported Query Parameters:**
-- `gender`: Filter by gender (male/female)
-- `age_group`: Filter by age group (child/teenager/adult/senior)
-- `country_id`: Filter by country ISO code
-- `min_age`: Filter by minimum age
-- `max_age`: Filter by maximum age
-- `min_gender_probability`: Filter by minimum gender probability
-- `min_country_probability`: Filter by minimum country probability
-- `sort_by`: Sort by field (age, created_at, gender_probability)
-- `order`: Sort order (asc/desc)
-- `page`: Page number (default: 1)
-- `limit`: Results per page (default: 10, max: 50)
-
-### 4. Natural Language Search
-```http
-GET /api/profiles/search?q=young males from nigeria
-GET /api/profiles/search?q=females above 30
-GET /api/profiles/search?q=adult males from kenya&page=1&limit=10
-```
-
-**Success Response (200):**
-```json
-{
-  "status": "success",
-  "page": 1,
-  "limit": 10,
-  "total": 150,
+  "total_pages": 203,
+  "links": {
+    "self": "/api/profiles?page=1&limit=10",
+    "next": "/api/profiles?page=2&limit=10",
+    "prev": null
+  },
   "data": [...]
 }
 ```
 
-**Error Response (400):**
+## Natural Language Parsing
+
+Rule-based parsing (no AI):
+
+| Keyword | Filter |
+|---------|--------|
+| male/female | gender |
+| young | min_age=16, max_age=24 |
+| adult/teenager/senior/child | age_group |
+| above {n} | min_age=n |
+| below {n} | max_age=n |
+| from {country} | country_id |
+
+Example: "young males from nigeria" →
 ```json
 {
-  "status": "error",
-  "message": "Unable to interpret query"
+  "gender": "male",
+  "min_age": 16,
+  "max_age": 24,
+  "country_id": "NG"
 }
 ```
 
-### 5. Delete Profile
-```http
-DELETE /api/profiles/{id}
-```
+## Setup & Installation
 
-**Success Response:** 204 No Content
+### Backend
 
-## Natural Language Search Documentation
-
-### Parsing Approach
-
-The natural language search uses **rule-based pattern matching** (no AI or LLM). The parser converts plain English queries into structured database filters by detecting specific keywords and patterns.
-
-### Supported Keywords and Their Mappings
-
-| Keyword/Pattern | Mapped Filter | Example Query | Resulting Filters |
-|-----------------|---------------|---------------|-------------------|
-| `male` | `gender=male` | "young males" | `gender=male, min_age=16, max_age=24` |
-| `female` | `gender=female` | "females above 30" | `gender=female, min_age=30` |
-| `young` | `min_age=16, max_age=24` | "young people" | `min_age=16, max_age=24` |
-| `adult` | `age_group=adult` | "adult males" | `gender=male, age_group=adult` |
-| `teenager` | `age_group=teenager` | "teenagers above 17" | `age_group=teenager, min_age=17` |
-| `senior` | `age_group=senior` | "senior women" | `gender=female, age_group=senior` |
-| `child` | `age_group=child` | "young children" | `age_group=child, min_age=16, max_age=24` |
-| `above {age}` | `min_age={age}` | "males above 30" | `gender=male, min_age=30` |
-| `below {age}` | `max_age={age}` | "people below 25" | `max_age=25` |
-| `over {age}` | `min_age={age}` | "people over 40" | `min_age=40` |
-| `under {age}` | `max_age={age}` | "people under 18" | `max_age=18` |
-| `from {country}` | `country_id={ISO}` | "from nigeria" | `country_id=NG` |
-
-### How the Logic Works
-
-1. **Query Normalization**: Convert the query to lowercase and strip whitespace
-2. **Pattern Matching**: Apply regex patterns to extract keywords and values
-3. **Filter Construction**: Build a dictionary of filters based on detected patterns
-4. **Validation**: If no filters are extracted, return an error
-5. **Database Query**: Apply filters to the database query with pagination
-
-### Example Query Parsing
-
-**Input**: "young males from nigeria"
-
-**Parsing Steps**:
-1. Detect "young" → Set `min_age=16, max_age=24`
-2. Detect "male" → Set `gender=male`
-3. Detect "from nigeria" → Look up country name "nigeria" → Set `country_id=NG`
-
-**Resulting Filters**:
-```python
-{
-  'gender': 'male',
-  'min_age': 16,
-  'max_age': 24,
-  'country_id': 'NG'
-}
-```
-
-### Country Name Mapping
-
-The parser includes a mapping of 50+ African and other country names to their ISO codes. It supports:
-- Exact matches: "nigeria" → "NG"
-- Multi-word countries: "united states" → "US", "south africa" → "ZA"
-- Partial matching for common variations
-
-### Limitations and Edge Cases
-
-**What the Parser Does NOT Handle:**
-
-1. **Complex Boolean Logic**: Cannot handle "AND", "OR", "NOT" operators beyond simple keyword combination
-2. **Age Ranges**: Cannot parse "between 20 and 30" - must use "above 20" and "below 30" separately
-3. **Negative Filters**: Cannot handle "not from nigeria" or "excluding males"
-4. **Multiple Countries**: Only extracts the first "from {country}" pattern
-5. **Gender Combinations**: "male and female" will only match the last detected gender
-6. **Synonyms**: Does not understand "kids" (use "children"), "guys" (use "males"), "ladies" (use "females")
-7. **Misspellings**: Requires exact keyword matching - "nigera" will not match "nigeria"
-8. **Contextual Understanding**: "young seniors" is semantically invalid but will still apply both filters
-9. **Probability Filters**: Cannot parse "high confidence" or "low probability" - use numeric filters instead
-10. **Date/Time Queries**: Cannot parse "profiles created this week" or "recent profiles"
-
-**Edge Cases:**
-
-- **Conflicting Age Filters**: "young adults above 30" will apply both `min_age=16, max_age=24` AND `min_age=30`, resulting in no matches
-- **Unknown Countries**: "from mars" will not be recognized and no country filter will be applied
-- **Empty Queries**: Returns 400 error with "Unable to interpret query"
-- **Case Sensitivity**: Parser is case-insensitive, but country names must match the mapping
-- **Partial Words**: "m" will not match "male" - full keywords are required
-
-**Supported Query Combinations:**
-
-✅ **Works**:
-- "young males from nigeria"
-- "females above 30"
-- "adult males from kenya"
-- "teenagers above 17"
-- "people from angola"
-
-❌ **Does Not Work**:
-- "people between 20 and 30" (use min_age/max_age)
-- "not from nigeria" (negative filters not supported)
-- "males or females" (boolean OR not supported)
-- "high confidence profiles" (use min_gender_probability)
-
-## Error Responses
-
-All errors follow this structure:
-```json
-{
-  "status": "error",
-  "message": "<error message>"
-}
-```
-
-| Status Code | Scenario |
-|------------|----------|
-| 400 | Missing or empty name |
-| 422 | Invalid type (e.g., name is a number) |
-| 404 | Profile not found |
-| 502 | External API returned invalid response |
-
-## Classification Rules
-
-- **Age Groups:**
-  - 0-12: `child`
-  - 13-19: `teenager`
-  - 20-59: `adult`
-  - 60+: `senior`
-
-- **Nationality:** Country with highest probability from Nationalize API
-
-## Installation
-
-1. **Clone the repository:**
-```bash
-git clone <your-repo-url>
-cd Stage_1_BE
-```
-
-2. **Create virtual environment (recommended):**
-```bash
-python -m venv venv
-
-# On Windows:
-venv\Scripts\activate
-
-# On macOS/Linux:
-source venv/bin/activate
-```
-
-3. **Install dependencies:**
+1. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-## Running the Application
+2. Create `.env` file:
+```bash
+cp .env.example .env
+# Edit with your GitHub OAuth credentials
+```
 
-### Development Mode
+3. Run the server:
 ```bash
 uvicorn main:app --reload
 ```
 
-### Production Mode
+### CLI Tool
+
+1. Navigate to CLI directory:
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+cd cli
 ```
 
-The API will be available at `http://localhost:8000`
+2. Install globally:
+```bash
+npm install -g .
+```
 
-## Testing the API
+3. Login:
+```bash
+insighta login
+```
 
-You can test using curl, Postman, or the interactive docs:
+### Web Portal
 
-**Interactive API Documentation:**
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+1. Navigate to web directory:
+```bash
+cd web
+```
 
-**Example curl commands:**
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Create `.env` file:
+```bash
+cp .env.example .env
+```
+
+4. Run development server:
+```bash
+npm run dev
+```
+
+## CLI Commands
 
 ```bash
-# Create a profile
-curl -X POST "http://localhost:8000/api/profiles" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "ella"}'
+# Authentication
+insighta login                    # Login with GitHub
+insighta logout                   # Logout
+insighta whoami                   # Show current user
 
-# Get all profiles
-curl "http://localhost:8000/api/profiles"
+# Profile commands
+insighta profiles list            # List all profiles
+insighta profiles list --gender male --country NG
+insighta profiles list --min-age 25 --max-age 40
+insighta profiles list --sort-by age --order desc
+insighta profiles list --page 2 --limit 20
 
-# Get filtered profiles
-curl "http://localhost:8000/api/profiles?gender=female"
+insighta profiles get <id>      # Get single profile
 
-# Get single profile
-curl "http://localhost:8000/api/profiles/{id}"
+insighta profiles search "young males from nigeria"
 
-# Delete profile
-curl -X DELETE "http://localhost:8000/api/profiles/{id}"
+insighta profiles create --name "Harriet Tubman"  # Admin only
+
+insighta profiles export --format csv
+insighta profiles export --format csv --gender male --country NG
+```
+
+## API Endpoints
+
+### Authentication
+- `GET /auth/github` - Initiate OAuth flow
+- `GET /auth/github/callback` - OAuth callback (web)
+- `POST /auth/github/callback` - OAuth callback (CLI)
+- `POST /auth/refresh` - Refresh tokens
+- `POST /auth/logout` - Logout
+- `GET /auth/me` - Get current user
+
+### Profiles (requires auth + X-API-Version: 1)
+- `GET /api/profiles` - List all (admin & analyst)
+- `GET /api/profiles/search?q=...` - Natural language search
+- `GET /api/profiles/:id` - Get single profile
+- `POST /api/profiles` - Create profile (admin only)
+- `DELETE /api/profiles/:id` - Delete profile (admin only)
+- `GET /api/profiles/export?format=csv` - Export CSV
+
+## Security Features
+
+1. **PKCE for CLI OAuth** - Prevents authorization code interception
+2. **HTTP-only Cookies (Web)** - JavaScript cannot access tokens
+3. **CSRF Protection** - For cookie-based authentication
+4. **Rate Limiting** - Auth: 10/min, API: 60/min per user
+5. **Token Rotation** - Refresh tokens are single-use
+6. **Short Token Lifetimes** - 3 min access, 5 min refresh
+7. **Role-Based Access Control** - Enforced on all endpoints
+8. **Request Logging** - All requests logged with user info
+
+## Environment Variables
+
+### Backend (.env)
+```
+GITHUB_CLIENT_ID=your_client_id
+GITHUB_CLIENT_SECRET=your_client_secret
+GITHUB_REDIRECT_URI=http://localhost:8000/auth/github/callback
+JWT_SECRET_KEY=your_random_secret
+FRONTEND_URL=http://localhost:3000
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+```
+
+### Web (.env)
+```
+VITE_API_URL=http://localhost:8000
 ```
 
 ## Deployment
 
-This application can be deployed to:
-- **Vercel** (with `vercel.json`)
-- **Railway**
-- **Heroku**
-- **AWS**
-- **PXXL App**
-- **Any platform supporting Python**
+### Backend
+Deploy to Railway, Render, or similar. Ensure environment variables are set.
 
-**Note:** Render is not accepted per submission guidelines.
+### Web Portal
+Build with `npm run build` and deploy to Vercel, Netlify, or similar.
 
-### Environment Variables
-None required for basic deployment.
-
-## Technology Stack
-
-- **Framework:** FastAPI
-- **Database:** SQLite (file-based)
-- **ORM:** SQLAlchemy
-- **HTTP Client:** httpx
-- **Pydantic:** Data validation
-
-## External APIs Used
-
-- **Genderize:** `https://api.genderize.io?name={name}`
-- **Agify:** `https://api.agify.io?name={name}`
-- **Nationalize:** `https://api.nationalize.io?name={name}`
-
-All external APIs are free and require no API keys.
-
-## Project Structure
-
+### CLI
+Published to npm registry:
+```bash
+npm publish
 ```
-Stage_1_BE/
-├── main.py           # Main application file
-├── requirements.txt  # Python dependencies
-├── README.md         # This file
-└── profiles.db       # SQLite database (created on first run)
-```
+
+## Tech Stack
+
+- **Backend**: FastAPI, SQLAlchemy, SQLite, python-jose
+- **CLI**: Node.js, Commander.js, Axios, cli-table3
+- **Web**: React, React Router, React Query, Tailwind CSS, Vite
+- **Auth**: GitHub OAuth, PKCE, JWT, HTTP-only cookies
 
 ## License
 
 MIT
-
-## Author
-
-Your Name
